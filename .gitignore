@@ -1,0 +1,23 @@
+# Build outputs
+*.exe
+*.out
+*.test
+asw-parser
+asw-parser-arm64
+asw-parser-amd64
+
+# Generated artifacts
+ics_files/
+public/
+
+# Go tooling
+/vendor/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# OS noise
+.DS_Store
+Thumbs.db
