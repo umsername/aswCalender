@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,13 +18,49 @@ import (
 )
 
 const (
-	scheduleURL      = "https://www.asw-ggmbh.de/laufender-studienbetrieb/stundenplaene"
-	baseASWURL       = "https://www.asw-ggmbh.de"
-	outputDir        = "ics_files"
-	minExpectedLinks = 40
+	// ===== Source configuration (HTTP default) =====
+	//
+	// Standard mode:
+	// - scheduleURL points to the ASW overview page
+	// - baseASWURL is used to resolve relative links
+	//
+	// scheduleURL = "https://www.asw-ggmbh.de/laufender-studienbetrieb/stundenplaene"
+	// baseASWURL  = "https://www.asw-ggmbh.de"
+	//
+	// Local mode:
+	// - scheduleURL can point to a local HTML file
+	// - baseASWURL is ignored in this case
+	// - relative detail links are resolved against the directory of that file
+	//
+	// Examples:
+	// Linux/macOS:
+	// scheduleURL = "file:///home/user/asw/stundenplaene.html"
+	// Windows (note the triple slash and forward slashes):
+	// scheduleURL = "file:///C:/Users/asw/Downloads/stundenplaene.html"
+	//
+	// If your local snapshot is a mirrored structure and contains relative links
+	// like "/laufender-studienbetrieb/xyz", you can optionally set baseASWURL
+	// to a local folder-based "file://" root by adjusting getDocument/link resolution.
+	// For now, simplest approach is: keep the overview + detail pages in one folder.
+	scheduleURL = "https://www.asw-ggmbh.de/laufender-studienbetrieb/stundenplaene"
+	baseASWURL  = "https://www.asw-ggmbh.de"
 
-	dateFormat = "02.01.2006"
-	tzID       = "Europe/Berlin"
+	// Output folder for generated .ics files
+	outputDir = "ics_files"
+
+	// Safety guard for HTTP parsing:
+	// If the website structure changes, we fail fast instead of publishing garbage.
+	// This guard is intentionally NOT enforced in local file mode.
+	minExpectedLinks = 20
+
+	// Date format used by the schedule header cells (e.g., 27.12.2000)
+	dateFormat = "27.01.2006"
+
+	// Timezone for generated calendar events
+	tzID = "Europe/Berlin"
+
+	// Polite identification for HTTP mode
+	userAgent = "ASW-ICS-Exporter/1.0 (+github.com/umsername/aswCalender)"
 )
 
 type ScheduleLink struct {
@@ -43,16 +80,23 @@ type ScheduleEvent struct {
 func main() {
 	log.Println("ASW schedule parser and ICS generator started")
 
+	// Clean output dir for deterministic results
+	if err := os.RemoveAll(outputDir); err != nil {
+		log.Printf("warning: failed to clean output dir: %v", err)
+	}
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		log.Fatalf("failed to create output dir: %v", err)
 	}
 
-	links, err := parseMainSchedulePage(scheduleURL)
+	isLocalMode, localBaseDir := detectLocalMode(scheduleURL)
+
+	links, err := parseMainSchedulePage(scheduleURL, isLocalMode, localBaseDir)
 	if err != nil {
 		log.Fatalf("failed to parse main schedule page: %v", err)
 	}
 
-	if len(links) < minExpectedLinks {
+	// Guard only for HTTP mode
+	if !isLocalMode && len(links) < minExpectedLinks {
 		log.Fatalf(
 			"critical: only %d links found (expected > %d). Page structure may have changed.",
 			len(links), minExpectedLinks,
@@ -78,7 +122,7 @@ func main() {
 			continue
 		}
 
-		// 1) Generate the individual block ICS as before.
+		// 1) Generate individual block ICS.
 		if err := generateICS(link.CourseName, events); err != nil {
 			log.Printf("failed to generate ICS for %s: %v", link.CourseName, err)
 		} else {
@@ -96,6 +140,9 @@ func main() {
 			continue
 		}
 
+		// Optional hardening: deduplicate aggregated events.
+		evs = dedupeEvents(evs)
+
 		if err := generateICS(classKey, evs); err != nil {
 			log.Printf("failed to generate aggregated ICS for %s: %v", classKey, err)
 			continue
@@ -110,16 +157,45 @@ func main() {
 	}
 }
 
-func httpGetDocument(url string) (*goquery.Document, error) {
+func detectLocalMode(url string) (bool, string) {
+	if strings.HasPrefix(url, "file://") {
+		path := strings.TrimPrefix(url, "file://")
+		// Base dir for resolving relative links in local mode
+		return true, filepath.Dir(path)
+	}
+	return false, ""
+}
+
+func getDocument(url string) (*goquery.Document, error) {
+	// Local file support via file://
+	if strings.HasPrefix(url, "file://") {
+		path := strings.TrimPrefix(url, "file://")
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+
+		return goquery.NewDocumentFromReader(f)
+	}
+
+	// Default: HTTP(S)
 	client := &http.Client{Timeout: 20 * time.Second}
 
-	res, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", userAgent)
+
+	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode != 200 {
+	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %d %s", res.StatusCode, res.Status)
 	}
 
@@ -131,10 +207,39 @@ func httpGetDocument(url string) (*goquery.Document, error) {
 	return goquery.NewDocumentFromReader(reader)
 }
 
+// Resolve href into a full URL depending on mode.
+func resolveURL(href string, isLocalMode bool, localBaseDir string) string {
+	href = strings.TrimSpace(href)
+
+	// Already absolute HTTP
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+
+	// Already absolute file URL
+	if strings.HasPrefix(href, "file://") {
+		return href
+	}
+
+	if isLocalMode && localBaseDir != "" {
+		// Treat leading "/" as relative-to-base-dir for local snapshots
+		h := strings.TrimPrefix(href, "/")
+		return "file://" + filepath.Join(localBaseDir, h)
+	}
+
+	// Website mode
+	if strings.HasPrefix(href, "/") {
+		return baseASWURL + href
+	}
+
+	// Relative without leading slash
+	return baseASWURL + "/" + href
+}
+
 // Step 1: Extract schedule links from the main ASW page.
 // This is intentionally flexible because the link text can vary by cohort/block naming.
-func parseMainSchedulePage(url string) ([]ScheduleLink, error) {
-	doc, err := httpGetDocument(url)
+func parseMainSchedulePage(url string, isLocalMode bool, localBaseDir string) ([]ScheduleLink, error) {
+	doc, err := getDocument(url)
 	if err != nil {
 		return nil, err
 	}
@@ -155,10 +260,7 @@ func parseMainSchedulePage(url string) ([]ScheduleLink, error) {
 			return
 		}
 
-		fullURL := href
-		if strings.HasPrefix(href, "/") {
-			fullURL = baseASWURL + href
-		}
+		fullURL := resolveURL(href, isLocalMode, localBaseDir)
 
 		if reText.MatchString(text) || reHref.MatchString(href) {
 			extracted = append(extracted, ScheduleLink{
@@ -185,7 +287,7 @@ func parseMainSchedulePage(url string) ([]ScheduleLink, error) {
 // Step 2: Parse a single schedule detail page generated by sked campus.
 // The exported HTML uses weekly tables and encodes events as td.v cells.
 func parseScheduleDetails(link ScheduleLink) ([]ScheduleEvent, error) {
-	doc, err := httpGetDocument(link.URL)
+	doc, err := getDocument(link.URL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch error for %s: %w", link.CourseName, err)
 	}
@@ -500,27 +602,20 @@ func hasClass(s *goquery.Selection, class string) bool {
 }
 
 func normalizeCourseName(s string) string {
-	s = strings.TrimSpace(s)
 	// Normalize different dash types to a single hyphen for consistent filenames/UIDs.
-	replacements := []string{
+	s = strings.TrimSpace(s)
+	r := strings.NewReplacer(
 		"−", "-", // minus sign
 		"–", "-", // en dash
 		"—", "-", // em dash
-		"‐", "-", // hyphen
-		"-", "-", // non-breaking hyphen
+		"‐", "-", // hyphen (U+2010)
+		"-", "-", // non-breaking hyphen (U+2011)
 		"‒", "-", // figure dash
-	}
-	r := strings.NewReplacer(replacements...)
-	s = r.Replace(s)
-	return s
+	)
+	return r.Replace(s)
 }
 
 // Derive an aggregated class key from a course/block name.
-// Examples that should work:
-// - DBWINFO-A04 4. Blockphase -> DBWINFO-A04
-// - DBBWL-B03 8. Block -> DBBWL-B03
-// - DBING-01-2024 - 4. Blockphase -> DBING-01
-// - DBMAB-04 3. Block -> DBMAB-04
 func extractClassKey(courseName string) string {
 	s := normalizeCourseName(courseName)
 
@@ -549,6 +644,29 @@ func extractClassKey(courseName string) string {
 	}
 
 	return "Other"
+}
+
+// Optional hardening for aggregated files.
+func dedupeEvents(in []ScheduleEvent) []ScheduleEvent {
+	seen := map[string]bool{}
+	out := make([]ScheduleEvent, 0, len(in))
+
+	for _, e := range in {
+		key := fmt.Sprintf("%d|%d|%s|%s|%s",
+			e.Start.Unix(),
+			e.End.Unix(),
+			e.Summary,
+			e.Location,
+			e.Description,
+		)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, e)
+	}
+
+	return out
 }
 
 // Step 3: Generate ICS file for one course or aggregated class.

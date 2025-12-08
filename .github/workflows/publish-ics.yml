@@ -2,8 +2,12 @@ name: Build and publish ASW ICS
 
 on:
   schedule:
-    - cron: "*/5 4-22 * * 1-6"
+    - cron: "*/20 6-21 * * 1-6"
   workflow_dispatch:
+
+concurrency:
+  group: asw-pages
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -12,6 +16,7 @@ permissions:
 
 jobs:
   build:
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -21,16 +26,18 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache: true
 
       - name: Generate ICS and site
         run: |
-          go mod tidy
+          go mod download
           go run .
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: public
+          retention-days: 1
 
   deploy:
     needs: build
