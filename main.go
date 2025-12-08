@@ -53,8 +53,14 @@ const (
 	// This guard is intentionally NOT enforced in local file mode.
 	minExpectedLinks = 20
 
-	// Date format used by the schedule header cells (e.g., 27.12.2000)
-	dateFormat = "27.01.2006"
+	// Go uses a fixed reference time for parsing/formatting:
+	// "Mon Jan 2 15:04:05 MST 2006".
+	// That’s why the layout looks like a real date instead of tokens like YYYY-MM-DD.
+	//
+	// This layout MUST match the date format used on the ASW pages.
+	// Only change it if the source actually shows dates in a different format.
+	// Otherwise the code will not function and skipp all events.
+	dateFormat = "02.01.2006"
 
 	// Timezone for generated calendar events
 	tzID = "Europe/Berlin"
