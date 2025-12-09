@@ -17,15 +17,12 @@ import (
 	"golang.org/x/net/html/charset"
 )
 
-const (
+var (
 	// ===== Source configuration (HTTP default) =====
 	//
 	// Standard mode:
 	// - scheduleURL points to the ASW overview page
 	// - baseASWURL is used to resolve relative links
-	//
-	// scheduleURL = "https://www.asw-ggmbh.de/laufender-studienbetrieb/stundenplaene"
-	// baseASWURL  = "https://www.asw-ggmbh.de"
 	//
 	// Local mode:
 	// - scheduleURL can point to a local HTML file
@@ -34,19 +31,19 @@ const (
 	//
 	// Examples:
 	// Linux/macOS:
-	// scheduleURL = "file:///home/user/asw/stundenplaene.html"
-	// Windows (note the triple slash and forward slashes):
-	// scheduleURL = "file:///C:/Users/asw/Downloads/stundenplaene.html"
+	// ASW_SCHEDULE_URL="file:///home/user/asw/stundenplaene.html"
 	//
-	// If your local snapshot is a mirrored structure and contains relative links
-	// like "/laufender-studienbetrieb/xyz", you can optionally set baseASWURL
-	// to a local folder-based "file://" root by adjusting getDocument/link resolution.
+	// Windows (note the triple slash and forward slashes):
+	// ASW_SCHEDULE_URL="file:///C:/Users/asw/Downloads/stundenplaene.html"
+	//
 	// For now, simplest approach is: keep the overview + detail pages in one folder.
-	scheduleURL = "https://www.asw-ggmbh.de/laufender-studienbetrieb/stundenplaene"
-	baseASWURL  = "https://www.asw-ggmbh.de"
+	scheduleURL = getenv("ASW_SCHEDULE_URL",
+		"https://www.asw-ggmbh.de/laufender-studienbetrieb/stundenplaene")
+	baseASWURL = getenv("ASW_BASE_URL",
+		"https://www.asw-ggmbh.de")
 
 	// Output folder for generated .ics files
-	outputDir = "ics_files"
+	outputDir = getenv("ASW_OUTPUT_DIR", "ics_files")
 
 	// Safety guard for HTTP parsing:
 	// If the website structure changes, we fail fast instead of publishing garbage.
@@ -59,15 +56,24 @@ const (
 	//
 	// This layout MUST match the date format used on the ASW pages.
 	// Only change it if the source actually shows dates in a different format.
-	// Otherwise the code will not function and skipp all events.
+	// Otherwise the code will not function and skip all events.
 	dateFormat = "02.01.2006"
 
 	// Timezone for generated calendar events
 	tzID = "Europe/Berlin"
 
 	// Polite identification for HTTP mode
-	userAgent = "ASW-ICS-Exporter/1.0 (+github.com/umsername/aswCalender)"
+	userAgent = getenv("ASW_USER_AGENT",
+		"ASW-ICS-Exporter/1.0 (+github.com/umsername/aswCalender)")
 )
+
+func getenv(key, def string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	return v
+}
 
 type ScheduleLink struct {
 	CourseName string

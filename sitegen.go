@@ -11,11 +11,14 @@ import (
 	"strings"
 )
 
-const (
-	publicDir    = "public"
-	publicICSDir = "public/ics_files"
-	sourcePage   = "https://www.asw-ggmbh.de/laufender-studienbetrieb/stundenplaene"
+var (
+	publicDir  = getenv("ASW_PUBLIC_DIR", "public")
+	sourcePage = getenv("ASW_SOURCE_PAGE",
+		"https://www.asw-ggmbh.de/laufender-studienbetrieb/stundenplaene")
 )
+
+// Computed at runtime from publicDir
+var publicICSDir = ""
 
 type fileGroup map[string]map[string][]string // block -> subgroup -> files
 
@@ -39,6 +42,9 @@ var (
 )
 
 func generateSite() error {
+	// Compute published ICS dir from configurable public root
+	publicICSDir = filepath.Join(publicDir, "ics_files")
+
 	if err := os.MkdirAll(publicICSDir, 0755); err != nil {
 		return err
 	}
@@ -260,7 +266,6 @@ func renderPage(path, title, subtitle string, blocks fileGroup, blockOrder []str
 	b.WriteString("Alternatively use <b>Copy URL</b> to add the feed manually or <b>Download file</b> for a one-time import.")
 	b.WriteString("</div>")
 	b.WriteString("</div></div>")
-
 
 	b.WriteString("<main>")
 
