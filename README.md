@@ -112,7 +112,7 @@ The app uses environment variables with sensible defaults:
   Default: `public`
 
 * `ASW_USER_AGENT`
-  Default: `ASW-ICS-Exporter/1.0 (+github.com/umsername/aswCalendar)`
+  Default: `ASW-ICS-Exporter/1.0 (+github.com/umsername/aswCalender)`
 
 ---
 
